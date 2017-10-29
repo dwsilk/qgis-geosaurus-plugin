@@ -1,0 +1,23 @@
+[general]
+name=Geosaurus
+description=This plugin helps to visualize PostGIS functions
+about=This plugin helps to visualize PostGIS functions
+version=dev
+
+qgisMinimumVersion=2.18
+
+author=Daniel Silk
+email=dsilk@linz.govt.nz
+
+homepage=https://github.com/dwsilk/qgis-geosaurus-plugin
+repository=https://github.com/dwsilk/qgis-geosaurus-plugin
+tracker=https://github.com/dwsilk/qgis-geosaurus-plugin/issues
+changelog=https://github.com/dwsilk/qgis-geosaurus-plugin/blob/master/CHANGELOG.rst
+
+tags=processing, development, testing
+
+category=Plugins
+icon=icon.png
+
+experimental=True
+deprecated=False

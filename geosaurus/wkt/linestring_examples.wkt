@@ -1,0 +1,13 @@
+id;group_id;description;result;wkt
+1;1;Simple Horizontal;;LINESTRING(0 -0.0003, 0.0008 -0.0003)
+2;2;Simple Vertical;;LINESTRING(0.0004 0, 0.0004 -0.0006)
+3;3;Simple Diagonal;;LINESTRING(0 0, 0.0008 -0.0006)
+4;4;Simple Two Sided;;LINESTRING(0 0, 0.0008 0, 0.0008 -0.0006)
+5;5;Simple Three Sided;;LINESTRING(0 -0.0006, 0 0, 0.0008 0, 0.0008 -0.0006)
+6;6;Diagonal Two Sided;;LINESTRING(0 0, 0.0008 -0.0006, 0.0008 0)
+7;7;Loop;;LINESTRING(0 -0.0006, 0 0, 0.0008 0, 0.0008 -0.0006, 0.0000 -0.0006)
+8;8;Loop With Overhang;;LINESTRING(0 -0.0006, 0 0, 0.0008 0, 0.0008 -0.0006, 0 0)
+9;9;Backtrack;;LINESTRING(0 -0.0006, 0 0, 0.0008 0, 0.0008 -0.0006, 0.0008 0)
+10;10;Self Intersect;;LINESTRING(0 0, 0.0008 -0.0006, 0.0008 0, 0 -0.0006)
+11;11;Duplicate Vertex;;LINESTRING(0 0, 0.0008 0, 0.0008 0, 0.0008 -0.0006)
+12;12;Unnecessary Vertex;;LINESTRING(0 0, 0.0008 0, 0.0008 -0.0003, 0.0008 -0.0006)
