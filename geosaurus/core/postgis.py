@@ -72,6 +72,24 @@ def select_buffer(wkt, distance, buffer_params):
     return result
 
 
+def select_offset_curve(wkt, distance, buffer_params):
+    curs = conn.cursor()
+    try:
+        if buffer_params:
+            curs.execute("""
+                SELECT ST_AsText(ST_OffsetCurve(ST_GeomFromText(%s), %s, %s));
+            """, (wkt, distance, buffer_params, ))
+        else:
+            curs.execute("""
+                SELECT ST_AsText(ST_OffsetCurve(ST_GeomFromText(%s), %s));
+            """, (wkt, distance, ))
+        result = (str(curs.fetchone()[0]), False, )
+    except psycopg2.InternalError, e:
+        result = (str(e), True, )
+    curs.close()
+    return result
+
+
 def select_one_geom(function_name, wkt):
     curs = conn.cursor()
     try:
@@ -104,6 +122,71 @@ def select_scale(wkt, scale_x, scale_y):
         curs.execute("""
             SELECT ST_AsText(ST_Scale(ST_GeomFromText(%s), %s, %s));
         """, (wkt, scale_x, scale_y, ))
+        result = (str(curs.fetchone()[0]), False, )
+    except psycopg2.InternalError, e:
+        result = (str(e), True, )
+    curs.close()
+    return result
+
+
+def select_rotate_x(wkt, rotate_x):
+    curs = conn.cursor()
+    try:
+        curs.execute("""
+            SELECT ST_AsText(ST_RotateX(ST_GeomFromText(%s), %s));
+        """, (wkt, rotate_x, ))
+        result = (str(curs.fetchone()[0]), False, )
+    except psycopg2.InternalError, e:
+        result = (str(e), True, )
+    curs.close()
+    return result
+
+
+def select_rotate_y(wkt, rotate_y):
+    curs = conn.cursor()
+    try:
+        curs.execute("""
+            SELECT ST_AsText(ST_RotateY(ST_GeomFromText(%s), %s));
+        """, (wkt, rotate_y, ))
+        result = (str(curs.fetchone()[0]), False, )
+    except psycopg2.InternalError, e:
+        result = (str(e), True, )
+    curs.close()
+    return result
+
+
+def select_interpolate(wkt, fraction):
+    curs = conn.cursor()
+    try:
+        curs.execute("""
+            SELECT ST_AsText(ST_LineInterpolatePoint(ST_GeomFromText(%s), %s));
+        """, (wkt, fraction, ))
+        result = (str(curs.fetchone()[0]), False, )
+    except psycopg2.InternalError, e:
+        result = (str(e), True, )
+    curs.close()
+    return result
+
+
+def select_substring(wkt, start_fraction, end_fraction):
+    curs = conn.cursor()
+    try:
+        curs.execute("""
+            SELECT ST_AsText(ST_LineSubstring(ST_GeomFromText(%s), %s, %s));
+        """, (wkt, start_fraction, end_fraction, ))
+        result = (str(curs.fetchone()[0]), False, )
+    except psycopg2.InternalError, e:
+        result = (str(e), True, )
+    curs.close()
+    return result
+
+
+def select_concave_hull(wkt, target_percentage, allow_holes):
+    curs = conn.cursor()
+    try:
+        curs.execute("""
+            SELECT ST_AsText(ST_ConcaveHull(ST_GeomFromText(%s), %s, %s));
+        """, (wkt, target_percentage, allow_holes, ))
         result = (str(curs.fetchone()[0]), False, )
     except psycopg2.InternalError, e:
         result = (str(e), True, )

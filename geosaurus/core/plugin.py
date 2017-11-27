@@ -6,7 +6,7 @@ from PyQt4.QtCore import (pyqtSlot, QSize, QSettings, QTranslator, qVersion,
     QCoreApplication)
 from PyQt4.QtGui import QAction, QIcon
 
-from gui.dialog import GeosaurusDialog
+from ..gui.dialog import GeosaurusDialog
 
 # Get the path for the parent directory of this file.
 __location__ = os.path.realpath(
@@ -20,12 +20,12 @@ class Geosaurus:
         """Constructor."""
         self.iface = iface
         self.plugin_dir = __location__
-        self.image_dir = os.path.join(__location__, "images")
+        self.image_dir = os.path.join(__location__, "..", "images")
 
         # Initialise locale
         locale = QSettings().value("locale/userLocale")[0:2]
         locale_path = os.path.join(
-            __location__, "i18n", "Geosaurus_{}.qm".format(locale)
+            __location__, "gui", "i18n", "Geosaurus_{}.qm".format(locale)
         )
         if os.path.exists(locale_path):
             self.translator = QTranslator()
@@ -43,7 +43,7 @@ class Geosaurus:
         self.menu = self.tr(u"&Geosaurus")
 
         # Initialise plugin dialogs
-        self.dlg = GeosaurusDialog()
+        self.dlg = None
 
     def tr(self, message):
         """Get the translation for a string using Qt translation API.
@@ -83,6 +83,7 @@ class Geosaurus:
         """Adds test data referred to in the test script to the map. Must
         be .shp (shapefile).
         """
+        self.dlg = GeosaurusDialog()
         self.dlg.show()
 
     def unload(self):

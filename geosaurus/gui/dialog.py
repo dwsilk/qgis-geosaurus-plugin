@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 
 import csv
+import math
 import os.path
 
 from PyQt4 import uic
-from PyQt4.QtCore import pyqtSignal, Qt, QVariant
+from PyQt4.QtCore import pyqtSignal, pyqtSlot, Qt, QVariant
 from PyQt4.QtGui import QDialog
 
 from qgis.core import (
@@ -15,17 +16,33 @@ from qgis.core import (
 from qgis.gui import QgsRubberBand
 from qgis.utils import iface
 
-from ..postgis import (
-    select_one_geom, select_buffer, postgis_version,
-    select_one_geom_return_text, select_scale
+from ..core.postgis import (
+    select_one_geom, postgis_version,
+    select_one_geom_return_text,
 )
+
+from ..functions import SPATIAL_FUNCTION_CATEGORIES
+from ..functions.factory import create_spatial_function
+
+EPSG = 4326
 
 END_CAP_ENUM = ["round", "flat", "square"]
 JOIN_ENUM = ["round", "mitre", "bevel"]
 
+OTHER_SUPPORTED_FUNCTIONS = [
+    "ST_AddPoint",
+    "ST_Segmentize",
+    "ST_Buffer",
+    "ST_Scale",
+    "ST_LineSubstring",
+    "ST_LineInterpolatePoint",
+    "ST_RotateX",
+    "ST_RotateY",
+    "ST_OffsetCurve",
+]
+
 GEOM_RETURNING_FUNCTIONS = [
     "ST_Boundary",
-    "ST_Buffer",
     "ST_BuildArea",
     "ST_Centroid",
     "ST_ConvexHull",
@@ -37,7 +54,6 @@ GEOM_RETURNING_FUNCTIONS = [
     # "ST_MinimumClearanceLine",
     "ST_PointOnSurface",
     "ST_Reverse",
-    "ST_Scale",
     "ST_StartPoint",
 ]
 
@@ -85,37 +101,117 @@ class GeosaurusDialog(QDialog, FORM_CLASS):
         super(GeosaurusDialog, self).__init__(parent)
         self.setupUi(self)
 
+        self.cmb_function_filter.addItems(sorted(SPATIAL_FUNCTION_CATEGORIES.keys()))
+        self.cmb_function_filter.setCurrentIndex(1)  # All
         self.populate_postgis_combo()
         self.update_postgis_version()
         self.cmb_end_cap.addItems(END_CAP_ENUM)
         self.cmb_join.addItems(JOIN_ENUM)
 
+        self.btn_single_geom.clicked.connect(self.single_geom_mode)
+        self.btn_predicates.clicked.connect(self.predicate_mode)
+
+        self.chk_point.stateChanged.connect(self.load_layers)
+        self.chk_linestring.stateChanged.connect(self.load_layers)
+        self.chk_polygon.stateChanged.connect(self.load_layers)
+        self.chk_multipoint.stateChanged.connect(self.load_layers)
+        self.chk_multilinestring.stateChanged.connect(self.load_layers)
+        self.chk_multipolygon.stateChanged.connect(self.load_layers)
+
+        self.cmb_base_relate.currentIndexChanged.connect(self.load_layers)
+        self.cmb_compare_relate.currentIndexChanged.connect(self.load_layers)
+
+        self.cmb_function_filter.currentIndexChanged.connect(self.populate_postgis_combo)
+
         self.cmb_postgis_function.currentIndexChanged.connect(self.update_ui)
         self.cmb_postgis_function.currentIndexChanged.connect(self.display_result)
 
         # Buffer Signals
-        self.sld_distance.valueChanged.connect(self.display_result)
-        self.sld_segments.valueChanged.connect(self.display_result)
-        self.sld_mitre.valueChanged.connect(self.display_result)
-        self.cmb_end_cap.currentIndexChanged.connect(self.display_result)
-        self.cmb_join.currentIndexChanged.connect(self.display_result)
+        self.sld_distance.valueChanged.connect(self.update_ui)
+        self.sld_segments.valueChanged.connect(self.update_ui)
+        self.sld_mitre.valueChanged.connect(self.update_ui)
+        self.cmb_end_cap.currentIndexChanged.connect(self.update_ui)
+        self.cmb_join.currentIndexChanged.connect(self.update_ui)
 
         # Scale Signals
-        self.sld_scale_x.valueChanged.connect(self.display_result)
-        self.sld_scale_y.valueChanged.connect(self.display_result)
+        self.sld_scale_x.valueChanged.connect(self.update_ui)
+        self.sld_scale_y.valueChanged.connect(self.update_ui)
 
-        self.point_lyr = self.prepare_memory_layer("Point", "Geosaurus Point")
-        self.linestring_lyr = self.prepare_memory_layer("LineString", "Geosaurus LineString")
-        self.polygon_lyr = self.prepare_memory_layer("Polygon", "Geosaurus Polygon")
-        self.add_memory_layer_to_map(self.point_lyr)
-        self.add_memory_layer_to_map(self.linestring_lyr)
-        self.add_memory_layer_to_map(self.polygon_lyr)
+        # Rotate Signals
+        self.sld_rotate.valueChanged.connect(self.update_ui)
 
-        self.add_features(self.linestring_lyr)
-        self.linestring_lyr.updateExtents()
+        # Interpolate Signals
+        self.sld_interpolate.valueChanged.connect(self.update_ui)
+        self.sld_start_fraction.valueChanged.connect(self.update_ui)
+        self.sld_end_fraction.valueChanged.connect(self.update_ui)
+
+        # Concave Signals
+        self.sld_concave.valueChanged.connect(self.update_ui)
+        self.chk_holes.stateChanged.connect(self.update_ui)
+
+        self.sld_latitude.valueChanged.connect(self.update_ui)
+        self.sld_longitude.valueChanged.connect(self.update_ui)
+        self.spn_position.valueChanged.connect(self.update_ui)
+
+        self.sld_max_segment_length.valueChanged.connect(self.update_ui)
+
+        self.label_lyr = None
+        self.polygon_lyr = None
+        self.linestring_lyr = None
+        self.point_lyr = None
 
         self.stk_params.hide()
         self.rubberbands = []
+
+    @pyqtSlot()
+    def single_geom_mode(self):
+        self.stk_select_geoms.setCurrentIndex(0)
+        self.btn_single_geom.setChecked(True)
+        self.btn_predicates.setChecked(False)
+
+    @pyqtSlot()
+    def predicate_mode(self):
+        self.stk_select_geoms.setCurrentIndex(1)
+        self.btn_predicates.setChecked(True)
+        self.btn_single_geom.setChecked(False)
+
+    @pyqtSlot()
+    def load_layers(self):
+        self.reset_layers()
+
+        self.translate_x = 0
+        self.translate_y = 0
+        self.label_lyr = self.prepare_memory_layer("Polygon", "Geosaurus Labels")
+        self.add_memory_layer_to_map(self.label_lyr)
+
+        if self.chk_polygon.isChecked():
+            self.polygon_lyr = self.prepare_memory_layer("Polygon", "Geosaurus Polygon")
+            self.add_memory_layer_to_map(self.polygon_lyr)
+        if self.chk_linestring.isChecked():
+            self.linestring_lyr = self.prepare_memory_layer("LineString", "Geosaurus LineString")
+            self.add_memory_layer_to_map(self.linestring_lyr)
+            self.add_features(self.linestring_lyr, "linestring_examples.wkt")
+            self.linestring_lyr.updateExtents()
+            qml_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "styles", "linestring_default.qml")
+            self.linestring_lyr.loadNamedStyle(qml_path)
+        if self.chk_point.isChecked():
+            self.point_lyr = self.prepare_memory_layer("Point", "Geosaurus Point")
+            self.add_memory_layer_to_map(self.point_lyr)
+
+        qml_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "styles", "label_default.qml")
+        self.label_lyr.loadNamedStyle(qml_path)
+        self.label_lyr.updateExtents()
+
+    def reset_layers(self):
+        all_layers = [
+            self.label_lyr,
+            self.point_lyr, self.linestring_lyr, self.polygon_lyr
+        ]
+
+        for lyr in all_layers:
+            if lyr:
+                QgsMapLayerRegistry.instance().removeMapLayers([lyr.id()])
+                lyr = None
 
     def populate_layer_combo(self, combo_box):
         """Not used"""
@@ -123,29 +219,17 @@ class GeosaurusDialog(QDialog, FORM_CLASS):
             combo_box.addItem(lyr.name())
 
     def populate_postgis_combo(self):
-        self.cmb_postgis_function.addItems(GEOM_RETURNING_FUNCTIONS)
-        self.cmb_postgis_function.addItems(TEXT_RETURNING_FUNCTIONS)
+        self.cmb_postgis_function.clear()
+        self.cmb_postgis_function.addItems(
+            SPATIAL_FUNCTION_CATEGORIES[self.cmb_function_filter.currentText()])
 
     def update_postgis_version(self):
-        self.lbl_postgis_function.setText("PostGIS Version: {} - Docs".format(postgis_version()))
-
-    def build_buffer_params(self):
-        buffer_params = ""
-        if self.sld_segments.value() != 8:
-            buffer_params += "quad_segs={} ".format(self.sld_segments.value())
-        if self.cmb_end_cap.currentText() != "round":
-            buffer_params += "endcap={} ".format(self.cmb_end_cap.currentText())
-        if self.cmb_join.currentText() != "round":
-            buffer_params += "join={} ".format(self.cmb_join.currentText())
-        if self.cmb_join.currentText() == "mitre" and self.sld_mitre.value() != 5:
-            buffer_params += "mitre_limit={}.0".format(self.sld_mitre.value())
-        buffer_params.rstrip()
-        return buffer_params
+        self.lbl_postgis_version.setText("PostGIS Version: {} - Docs".format(postgis_version()))
 
     @staticmethod
     def prepare_memory_layer(geometry_type, name):
         """Prepare memory layers that will be used to display tests"""
-        lyr = QgsVectorLayer(geometry_type, name, "memory")
+        lyr = QgsVectorLayer("{0}?crs=epsg:{1}".format(geometry_type, EPSG), name, "memory")
         provider = lyr.dataProvider()
         with edit(lyr):
             provider.addAttributes([
@@ -161,145 +245,210 @@ class GeosaurusDialog(QDialog, FORM_CLASS):
     def add_memory_layer_to_map(lyr):
         QgsMapLayerRegistry.instance().addMapLayer(lyr)
 
-    @staticmethod
-    def delete_features_from_lyr(lyr):
-        """Delete all features from a layer"""
-        with edit(lyr):
-            ids = [feat.id() for feat in lyr.getFeatures()]
-            lyr.deleteFeatures(ids)
+    def add_features(self, lyr, wkt_file_name):
 
-    @staticmethod
-    def add_features(lyr):
-        linestring_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "wkt", "linestring_examples.wkt")
-        print linestring_path
+        linestring_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "wkt", wkt_file_name)
 
         with open(linestring_path, "rb") as f:
             reader = csv.reader(f, delimiter=";", quotechar='"')
             feature_attr_rows = list(reader)[1:]
 
-        with edit(lyr):
+        # Simultaneously add features to example layer and label layer
+        with edit(lyr), edit(self.label_lyr):
             feats = []
             count_feats = 0
-            translate_x = 0
-            translate_y = 0
+
+            label_feats = []
+            label_poly = "POLYGON((0 0, 0.0008 0, 0.0008 -0.0006, 0 -0.0006, 0 0))"
+
             for row in feature_attr_rows:
                 attrs = row[0:4]
-                geom = QgsGeometry.fromWkt(row[4])
+
+                # Every 6th feature is the last on that row
                 if count_feats == 6:
-                    translate_x = 0
-                    translate_y += -0.002
+                    self.translate_x = 0
+                    self.translate_y += -0.002
                     count_feats = 0
-                geom.translate(translate_x, translate_y)
-                translate_x += 0.002
-                count_feats += 1
-                feat = QgsFeature()
-                feat.setGeometry(geom)
-                feat.setAttributes(attrs)
+
+                feat = self.create_translated_feature(row[4], attrs)
                 feats.append(feat)
+
+                label_feat = self.create_translated_feature(label_poly, attrs)
+                label_feats.append(label_feat)
+
+                # Change vars to translate next feature along the row
+                self.translate_x += 0.002
+                count_feats += 1
+
             lyr.addFeatures(feats, False)
+            self.label_lyr.addFeatures(label_feats, False)
+
+    def create_translated_feature(self, wkt, attrs):
+
+        geom = QgsGeometry.fromWkt(wkt)
+        geom.translate(self.translate_x, self.translate_y)
+        feat = QgsFeature()
+        feat.setGeometry(geom)
+        feat.setAttributes(attrs)
+        return feat
 
     def update_ui(self):
-        postgis_function = self.cmb_postgis_function.currentText()
-        if postgis_function == "ST_Buffer":
-            self.stk_params.show()
-            self.stk_params.setCurrentIndex(0)
-        elif postgis_function == "ST_Scale":
-            self.stk_params.show()
-            self.stk_params.setCurrentIndex(1)
-        else:
-            self.stk_params.hide()
 
-    def display_result(self):
+        postgis_function = self.cmb_postgis_function.currentText()
+
         for x in self.rubberbands:
             x.reset()
         self.rubberbands = []
 
-        self.txtb_result.setText("")
+        kwargs = None
+        if postgis_function == "ST_Buffer":
+            self.stk_params.show()
+            self.stk_params.setCurrentIndex(0)
+            self.cmb_end_cap.setEnabled(True)
+            self.lbl_end_cap.setEnabled(True)
+            kwargs = {
+                "distance": self.sld_distance.value() * 0.00001,
+                "quad_segs": self.sld_segments.value(),
+                "endcap": self.cmb_end_cap.currentText(),
+                "join": self.cmb_join.currentText(),
+                "mitre_limit": "{0}.0".format(self.sld_mitre.value()),
+            }
+        elif postgis_function == "ST_OffsetCurve":
+            self.stk_params.show()
+            self.stk_params.setCurrentIndex(0)
+            self.cmb_end_cap.setEnabled(False)
+            self.lbl_end_cap.setEnabled(False)
+            kwargs = {
+                "distance": self.sld_distance.value() * 0.00001,
+                "quad_segs": self.sld_segments.value(),
+                "join": self.cmb_join.currentText(),
+                "mitre_limit": "{0}.0".format(self.sld_mitre.value()),
+            }
+        elif postgis_function == "ST_Scale":
+            self.stk_params.show()
+            self.stk_params.setCurrentIndex(1)
+            kwargs = {
+                "xfactor": self.sld_scale_x.value() * 0.04,
+                "yfactor": self.sld_scale_y.value() * 0.04,
+            }
+        elif postgis_function in ["ST_RotateX", "ST_RotateY"]:
+            self.stk_params.show()
+            self.stk_params.setCurrentIndex(2)
+            kwargs = {
+                "radians": math.radians(self.sld_rotate.value()),
+            }
+        elif postgis_function == "ST_LineInterpolatePoint":
+            self.stk_params.show()
+            self.stk_params.setCurrentIndex(3)
+            kwargs = {
+                "fraction": self.sld_interpolate.value() * 0.04,
+            }
+        elif postgis_function == "ST_LineSubstring":
+            self.stk_params.show()
+            self.stk_params.setCurrentIndex(4)
+            kwargs = {
+                "startfraction": self.sld_start_fraction.value() * 0.04,
+                "endfraction": self.sld_end_fraction.value() * 0.04,
+            }
+        elif postgis_function == "ST_AddPoint":
+            self.stk_params.show()
+            self.stk_params.setCurrentIndex(6)
+            kwargs = {
+                "point_x": self.sld_latitude.value() * 0.00001,
+                "point_y": self.sld_longitude.value() * 0.00001,
+                "position": self.spn_position.value(),
+            }
+        elif postgis_function == "ST_Segmentize":
+            self.stk_params.show()
+            self.stk_params.setCurrentIndex(7)
+            kwargs = {
+                "max_segment_length": self.sld_max_segment_length.value() * 0.00001
+            }
+        else:
+            self.stk_params.hide()
 
-        lyr = self.linestring_lyr
-        with edit(lyr):
+        function = create_spatial_function(postgis_function, kwargs)
+
+        # TODO: remove this if later when everything works through create_spatial_function()
+        if function:
+            lyr = self.linestring_lyr
             for f in lyr.getFeatures():
-                g_wkt = f.geometry().exportToWkt()
-                postgis_function = self.cmb_postgis_function.currentText()
-                if postgis_function == "ST_Buffer":
-                    buffer_params = self.build_buffer_params()
-                    self.display_query(g_wkt, self.sld_distance.value()*0.00001, buffer_params)
-                    new_g_wkt = select_buffer(g_wkt, self.sld_distance.value()*0.00001, buffer_params)[0]
-                    self.txtb_result.setText(new_g_wkt)
-                elif postgis_function == "ST_Scale":
-                    self.display_query(g_wkt, self.sld_scale_x.value()*0.04, self.sld_scale_y.value()*0.04)
-                    new_g_wkt = select_scale(g_wkt, self.sld_scale_x.value()*0.04, self.sld_scale_y.value()*0.04)[0]
-                    self.txtb_result.setText(new_g_wkt)
-                elif postgis_function in GEOM_RETURNING_FUNCTIONS:
-                    self.display_query(g_wkt, postgis_function)
-                    new_g_wkt = select_one_geom(postgis_function, g_wkt)[0]
-                    self.txtb_result.setText(new_g_wkt)
-                else:
-                    text_result = select_one_geom_return_text(postgis_function, g_wkt)[0]
-                    self.txtb_result.setText(text_result)
-                    lyr.changeAttributeValue(f.id(), 3, text_result)
-                    continue
+                wkt = f.geometry().exportToWkt()
+                self.txtb_query.setText(function.sample_query_as_text(wkt))
+                result = function.execute_query(wkt)[0]
+                self.txtb_result.setText(result)
 
-                new_g = QgsGeometry.fromWkt(new_g_wkt)
+                new_g = QgsGeometry.fromWkt(result)
 
-                if new_g:
-                    if new_g.type() == 2:  # Polygon
-                        new_ag = new_g.geometry()
-                        if new_ag.numInteriorRings() > 0:
-                            new_ig = QgsGeometry.fromWkt(new_ag.interiorRing(0).asWkt())
+                self.build_rubberbands(new_g, lyr)
 
-                            r = QgsRubberBand(iface.mapCanvas(), QGis.Line)
-                            r.setToGeometry(new_ig, lyr)
-                            r.setBorderColor(Qt.darkBlue)
-                            r.setWidth(5)
-                            r.show()
+    def display_result(self):
+        postgis_function = self.cmb_postgis_function.currentText()
+        if postgis_function in OTHER_SUPPORTED_FUNCTIONS:
+            pass
+        else:
+            for x in self.rubberbands:
+                x.reset()
+            self.rubberbands = []
 
-                            r2 = QgsRubberBand(iface.mapCanvas(), QGis.Line)
-                            r2.setToGeometry(new_ig, lyr)
-                            r2.setBorderColor(Qt.white)
-                            r2.setWidth(2)
-                            r2.show()
+            self.txtb_result.setText("")
 
-                            self.rubberbands.append(r)
-                            self.rubberbands.append(r2)
+            with edit(self.label_lyr):
+                for f in self.linestring_lyr.getFeatures():
+                    g_wkt = f.geometry().exportToWkt()
+                    postgis_function = self.cmb_postgis_function.currentText()
+                    if postgis_function in GEOM_RETURNING_FUNCTIONS:
+                        self.display_query(g_wkt, postgis_function)
+                        out_geom_wkt = select_one_geom(postgis_function, g_wkt)[0]
+                        self.txtb_result.setText(out_geom_wkt)
+                    elif postgis_function in TEXT_RETURNING_FUNCTIONS:
+                        text_result = select_one_geom_return_text(postgis_function, g_wkt)[0]
+                        self.txtb_result.setText(text_result)
+                        self.label_lyr.changeAttributeValue(f.id(), 3, text_result)
+                        continue
 
-                    # poly = new_g.asPolygon()
-                    # print poly
-                    # print "Rings: {}".format(poly.numInteriorRings())
-                    # if poly.numInteriorRings() > 0:
-                    #     print poly.interiorRing(1)
+                    out_geom = QgsGeometry.fromWkt(out_geom_wkt)
+                    self.build_rubberbands(out_geom, self.linestring_lyr)
 
-                    r = QgsRubberBand(iface.mapCanvas(), QGis.Polygon)
-                    r.setToGeometry(new_g, lyr)
-                    r.setBorderColor(Qt.darkBlue)
-                    r.setWidth(5)
-                    r.show()
+    def build_rubberbands(self, geometry, lyr):
+        if geometry:
+            if geometry.type() == 2:  # Polygon
 
-                    r2 = QgsRubberBand(iface.mapCanvas(), QGis.Polygon)
-                    r2.setToGeometry(new_g, lyr)
-                    r2.setBorderColor(Qt.white)
-                    r2.setWidth(2)
-                    r2.show()
+                # Handle interior rings in polygons
+                polygon_geometry = geometry.geometry()
+                if polygon_geometry.numInteriorRings() > 0:
+                    for ring in xrange(polygon_geometry.numInteriorRings()):
+                        interior_geometry = QgsGeometry.fromWkt(
+                            polygon_geometry.interiorRing(ring).asWkt())
 
-                    self.rubberbands.append(r)
-                    self.rubberbands.append(r2)
+                        outer_stroke = self.create_rubberband(
+                            lyr, QGis.Line, interior_geometry, Qt.darkBlue, 5)
+                        inner_stroke = self.create_rubberband(
+                            lyr, QGis.Line, interior_geometry, Qt.white, 2)
+                        self.rubberbands.append(outer_stroke)
+                        self.rubberbands.append(inner_stroke)
+
+            outer_stroke = self.create_rubberband(
+                lyr, QGis.Polygon, geometry, Qt.darkBlue, 5)
+            inner_stroke = self.create_rubberband(
+                lyr, QGis.Polygon, geometry, Qt.white, 2)
+            self.rubberbands.append(outer_stroke)
+            self.rubberbands.append(inner_stroke)
+
+    @staticmethod
+    def create_rubberband(lyr, geometry_type, geometry, colour, width):
+        r = QgsRubberBand(iface.mapCanvas(), geometry_type)
+        r.setToGeometry(geometry, lyr)
+        r.setBorderColor(colour)
+        r.setWidth(width)
+        r.show()
+        return r
 
     def display_query(self, *args):
-        postgis_function = self.cmb_postgis_function.currentText()
-        if postgis_function == "ST_Buffer":
-            wkt = args[0]
-            distance = args[1]
-            buffer_string = args[2]
-            self.txtb_query.setText("SELECT ST_AsText(ST_Buffer(ST_GeomFromText('{0}', {1:.5f}, '{2}')))".format(wkt, distance, buffer_string))
-        elif postgis_function == "ST_Scale":
-            wkt = args[0]
-            scale_x = args[1]
-            scale_y = args[2]
-            self.txtb_query.setText("SELECT ST_AsText(ST_Scale(ST_GeomFromText'{0}', {1:.2f}, {2:.2f})))".format(wkt, scale_x, scale_y))
-        else:
-            wkt = args[0]
-            function_name = args[1]
-            self.txtb_query.setText("SELECT ST_AsText({1}(ST_GeomFromText('{0}')))".format(wkt, function_name))
+        wkt = args[0]
+        function_name = args[1]
+        self.txtb_query.setText("SELECT ST_AsText({1}(ST_GeomFromText('{0}')))".format(wkt, function_name))
 
     def closeEvent(self, event):
         self.closingDialog.emit()

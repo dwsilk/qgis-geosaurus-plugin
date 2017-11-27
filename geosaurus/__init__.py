@@ -11,5 +11,5 @@ def classFactory(iface):
     :type iface: QgsInterface
     """
 
-    from .plugin import Geosaurus
+    from .core.plugin import Geosaurus
     return Geosaurus(iface)
