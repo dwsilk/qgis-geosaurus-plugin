@@ -184,9 +184,12 @@ class GeosaurusDialog(QDialog, FORM_CLASS):
         self.label_lyr = self.prepare_memory_layer("Polygon", "Geosaurus Labels")
         self.add_memory_layer_to_map(self.label_lyr)
 
-        if self.chk_polygon.isChecked():
-            self.polygon_lyr = self.prepare_memory_layer("Polygon", "Geosaurus Polygon")
-            self.add_memory_layer_to_map(self.polygon_lyr)
+        if self.chk_point.isChecked():
+            self.point_lyr = self.prepare_memory_layer("Point", "Geosaurus Point")
+            self.add_memory_layer_to_map(self.point_lyr)
+            self.add_features(self.point_lyr, "point_examples.wkt")
+            qml_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "styles", "point_default.qml")
+            self.point_lyr.loadNamedStyle(qml_path)
         if self.chk_linestring.isChecked():
             self.linestring_lyr = self.prepare_memory_layer("LineString", "Geosaurus LineString")
             self.add_memory_layer_to_map(self.linestring_lyr)
@@ -194,13 +197,19 @@ class GeosaurusDialog(QDialog, FORM_CLASS):
             self.linestring_lyr.updateExtents()
             qml_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "styles", "linestring_default.qml")
             self.linestring_lyr.loadNamedStyle(qml_path)
-        if self.chk_point.isChecked():
-            self.point_lyr = self.prepare_memory_layer("Point", "Geosaurus Point")
-            self.add_memory_layer_to_map(self.point_lyr)
+        if self.chk_polygon.isChecked():
+            self.polygon_lyr = self.prepare_memory_layer("Polygon", "Geosaurus Polygon")
+            self.add_memory_layer_to_map(self.polygon_lyr)
+            self.add_features(self.polygon_lyr, "polygon_examples.wkt")
+            self.polygon_lyr.updateExtents()
+            qml_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "styles", "polygon_default.qml")
+            self.polygon_lyr.loadNamedStyle(qml_path)
 
         qml_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "styles", "label_default.qml")
         self.label_lyr.loadNamedStyle(qml_path)
         self.label_lyr.updateExtents()
+
+        iface.mapCanvas().zoomToFullExtent()
 
     def reset_layers(self):
         all_layers = [
@@ -210,7 +219,10 @@ class GeosaurusDialog(QDialog, FORM_CLASS):
 
         for lyr in all_layers:
             if lyr:
-                QgsMapLayerRegistry.instance().removeMapLayers([lyr.id()])
+                try:
+                    QgsMapLayerRegistry.instance().removeMapLayers([lyr.id()])
+                except RuntimeError:
+                    pass
                 lyr = None
 
     def populate_layer_combo(self, combo_box):
@@ -247,10 +259,16 @@ class GeosaurusDialog(QDialog, FORM_CLASS):
 
     def add_features(self, lyr, wkt_file_name):
 
-        linestring_path = os.path.join(
+        # If another geometry type has already been added to the map,
+        # bump new features down a row
+        if self.translate_x != 0 or self.translate_y != 0:
+            self.translate_y += -0.002
+            self.translate_x = 0
+
+        wkt_path = os.path.join(
             os.path.dirname(os.path.dirname(__file__)), "wkt", wkt_file_name)
 
-        with open(linestring_path, "rb") as f:
+        with open(wkt_path, "rb") as f:
             reader = csv.reader(f, delimiter=";", quotechar='"')
             feature_attr_rows = list(reader)[1:]
 
@@ -372,16 +390,18 @@ class GeosaurusDialog(QDialog, FORM_CLASS):
 
         # TODO: remove this if later when everything works through create_spatial_function()
         if function:
-            lyr = self.linestring_lyr
-            for f in lyr.getFeatures():
-                wkt = f.geometry().exportToWkt()
-                self.txtb_query.setText(function.sample_query_as_text(wkt))
-                result = function.execute_query(wkt)[0]
-                self.txtb_result.setText(result)
+            lyrs = [self.point_lyr, self.linestring_lyr, self.polygon_lyr]
+            for lyr in lyrs:
+                if lyr:
+                    for f in lyr.getFeatures():
+                        wkt = f.geometry().exportToWkt()
+                        self.txtb_query.setText(function.sample_query_as_text(wkt))
+                        result = function.execute_query(wkt)[0]
+                        self.txtb_result.setText(result)
 
-                new_g = QgsGeometry.fromWkt(result)
+                        new_g = QgsGeometry.fromWkt(result)
 
-                self.build_rubberbands(new_g, lyr)
+                        self.build_rubberbands(new_g, lyr)
 
     def display_result(self):
         postgis_function = self.cmb_postgis_function.currentText()

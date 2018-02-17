@@ -1,0 +1,4 @@
+id;group_id;description;result;wkt
+1;1;Centre;;POINT(0.0004 -0.0003)
+2;2;Top Left;;POINT(0.0002 -0.0002)
+3;3;Bottom Right;;POINT(0.0006 -0.0004)
